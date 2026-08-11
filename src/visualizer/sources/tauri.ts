@@ -1,3 +1,4 @@
+import { Channel, invoke } from "@tauri-apps/api/core";
 import type { AudioSource } from "./types";
 
 /**
@@ -14,22 +15,15 @@ import type { AudioSource } from "./types";
  * Rust drain thread and ship packed RGBA rows instead — ~61 kB/s and no FFT on
  * the UI thread at all. See docs/mixer-integration.md.
  *
- * `@tauri-apps/api` is resolved through a non-literal specifier so this module
- * stays importable — and type-checkable — in a plain browser build where the
- * package is not installed and the class is simply never constructed.
+ * The import of `@tauri-apps/api/core` is deliberately **static**. An earlier
+ * version hid it behind a dynamic import with a non-literal specifier, so that
+ * this file would still type-check in the standalone browser build where the
+ * package is not installed. That works for tsc and breaks at runtime: a bundler
+ * cannot statically analyse a computed specifier, so Vite emits the bare string
+ * untouched and the browser fails with "does not resolve to a valid URL". In
+ * the standalone repo the package is supplied as a types-only shim instead
+ * (`src/tauri-shim.d.ts`), and this module is never imported there anyway.
  */
-
-/** The slice of `@tauri-apps/api/core` this file uses. */
-interface TauriCore {
-  invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T>;
-  Channel: new <T>() => { onmessage: (msg: T) => void };
-}
-
-const TAURI_CORE = "@tauri-apps/api/core";
-
-async function loadTauri(): Promise<TauriCore> {
-  return (await import(/* @vite-ignore */ TAURI_CORE)) as unknown as TauriCore;
-}
 
 export class TauriSource implements AudioSource {
   private _sampleRate = 48000;
@@ -41,13 +35,10 @@ export class TauriSource implements AudioSource {
 
   /** Reads the engine's actual device rate before analysis is configured. */
   async prepare(): Promise<void> {
-    const { invoke } = await loadTauri();
     this._sampleRate = await invoke<number>("viz_sample_rate");
   }
 
   async start(onSamples: (chunk: Float32Array) => void): Promise<void> {
-    const { invoke, Channel } = await loadTauri();
-
     const channel = new Channel<ArrayBuffer | number[]>();
     channel.onmessage = (msg: ArrayBuffer | number[]) => {
       // Tauri hands raw responses back as an ArrayBuffer where supported and
