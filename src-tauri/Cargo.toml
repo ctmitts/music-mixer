@@ -1,0 +1,46 @@
+[package]
+name = "mix-table"
+version = "0.1.0"
+description = "Mix Table — two-deck DJ mixer"
+authors = ["Colin"]
+edition = "2021"
+
+[lib]
+name = "mix_table_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+symphonia = { version = "0.5", features = ["all"] }
+cpal = "0.16"
+rtrb = "0.3"
+lofty = "0.22"
+walkdir = "2"
+rubato = "0.16"
+anyhow = "1"
+base64 = "0.22"
+rustfft = "6"
+rusqlite = { version = "0.32", features = ["bundled"] }
+signalsmith-stretch = "0.1.3"
+hound = "3.5.1"
+ebur128 = "0.1.10"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+[profile.dev]
+# Audio DSP is unusably slow at opt-level 0; keep decode/mix fast in dev builds.
+opt-level = 2
+# Incremental compilation at opt-level 2 emits internal `anon.*.llvm.*` symbols
+# that fail to resolve at link time ("symbol(s) not found for architecture
+# arm64") on any rebuild after the lib changes. Full codegen units avoid it;
+# the cost is a slower rebuild, versus a build that simply doesn't link.
+incremental = false
+
+[profile.dev.package."*"]
+opt-level = 3
