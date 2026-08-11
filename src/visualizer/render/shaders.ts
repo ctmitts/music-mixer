@@ -129,14 +129,51 @@ vec3 spectralColor(vec4 s) {
 }
 
 // ---------------------------------------------------------------------------
-// Mode 0 — scrolling waterfall.
-// The literal spectrogram. Least abstract, and the one to trust when checking
-// that the analysis itself is right.
+// Mode 0 — waterfall, as a receding ridgeline landscape.
+//
+// A flat heatmap is the least interesting thing you can do with this data, and
+// "waterfall" originally meant the 3D sonogram plot anyway. Each history frame
+// is a ridgeline across log-frequency, displaced vertically by magnitude and
+// pushed back toward a horizon. Rows are walked front to back and the first
+// one that covers the pixel wins, which is painter's-algorithm hidden-surface
+// removal — the near ridges genuinely occlude the far ones, and that occlusion
+// is what reads as depth.
 // ---------------------------------------------------------------------------
 vec3 modeWaterfall(vec2 uv) {
-  float age = (1.0 - uv.x) * uWindowFrac * float(uHistoryLen);
-  float bin = uv.y * float(uBins);
-  return spectralColor(sampleHistory(bin, age));
+  const int ROWS = 64;
+
+  for (int i = 0; i < ROWS; i++) {
+    float t = float(i) / float(ROWS - 1);   // 0 = nearest/newest, 1 = horizon
+
+    // Non-linear so rows bunch up toward the horizon rather than marching back
+    // at an even pace — even spacing looks like a staircase, not a distance.
+    float persp = pow(t, 0.72);
+    float baseY  = mix(0.03, 0.82, persp);
+    float shrink = mix(1.0, 0.62, persp);   // far rows are narrower
+
+    // This pixel's x, expressed in the row's own (narrowed) frequency space.
+    float lx = (uv.x - 0.5) / shrink + 0.5;
+    if (lx < 0.0 || lx > 1.0) continue;
+
+    float age = t * uWindowFrac * float(uHistoryLen);
+    vec4 s = sampleHistory(lx * float(uBins), age);
+
+    // Displacement shrinks with distance so the perspective stays consistent.
+    float ridge = baseY + s.r * 0.17 * shrink;
+    if (uv.y > ridge) continue;             // above this crest — look further back
+
+    // Inside this row's surface: it hides everything behind it.
+    float below = smoothstep(0.0, 0.005, ridge - uv.y);
+    vec3 c = spectralColor(s);
+    // Hot rim exactly on the crest, dimmer fill beneath, so the lines read as
+    // lines instead of the whole surface glowing into mush. The fill still has
+    // to carry real colour — drop it too far and the landscape reads as bare
+    // wireframe floating in black.
+    vec3 col = mix(c * 2.1, c * 0.42, below);
+    // Aerial haze toward the horizon.
+    return col * mix(1.0, 0.62, persp);
+  }
+  return vec3(0.0);
 }
 
 // ---------------------------------------------------------------------------
