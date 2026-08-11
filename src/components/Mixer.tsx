@@ -10,6 +10,7 @@ import {
   setEq,
   setGain,
   setMasterGain,
+  openVisualizerWindow,
   setOutputDevice,
   startRecording,
   stopRecording,
@@ -56,6 +57,15 @@ function RecordButton() {
         title="Record the master mix to a WAV in ~/Music/Mix Table Recordings"
       >
         {recording ? `■ ${formatTime(elapsed)}` : "● Rec"}
+      </button>
+      <button
+        className="btn"
+        onClick={() => {
+          void openVisualizerWindow();
+        }}
+        title="Open the spectral visualizer in its own window — drag it to a TV or projector and press F"
+      >
+        ◈ Visual
       </button>
       {lastFile && !recording && (
         <span className="record-file" title={lastFile}>

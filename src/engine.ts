@@ -205,6 +205,8 @@ export function shiftCamelot(camelot: string, semitones: number): string {
 }
 export const startRecording = () => invoke<string>("start_recording");
 export const stopRecording = () => invoke("stop_recording");
+/** Open the spectral visualizer in its own window (drag it to a TV/projector). */
+export const openVisualizerWindow = () => invoke("open_visualizer_window");
 
 export interface DeckRestore {
   meta: TrackMeta;

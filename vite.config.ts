@@ -8,6 +8,17 @@ const host = process.env.TAURI_DEV_HOST;
 export default defineConfig(async () => ({
   plugins: [react()],
 
+  // Two entry points: the mixer UI and the standalone visualizer window that
+  // gets dragged onto a TV or projector.
+  build: {
+    rollupOptions: {
+      input: {
+        main: "index.html",
+        visualizer: "visualizer.html",
+      },
+    },
+  },
+
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
   // 1. prevent Vite from obscuring rust errors

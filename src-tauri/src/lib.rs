@@ -533,6 +533,27 @@ fn stop_visualizer(engine: EngineState) {
     engine.send(Cmd::StopViz);
 }
 
+/// Open the visualizer on its own window so it can be dragged to a TV or
+/// projector and fullscreened there, leaving the mixer UI on the main display.
+#[tauri::command]
+fn open_visualizer_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(w) = app.get_webview_window("visualizer") {
+        // Already open — just raise it rather than stacking duplicates.
+        let _ = w.set_focus();
+        return Ok(());
+    }
+    tauri::WebviewWindowBuilder::new(
+        &app,
+        "visualizer",
+        tauri::WebviewUrl::App("visualizer.html".into()),
+    )
+    .title("Mix Table — Visualizer")
+    .inner_size(1280.0, 720.0)
+    .build()
+    .map_err(err_str)?;
+    Ok(())
+}
+
 fn dirs_home() -> std::path::PathBuf {
     std::env::var_os("HOME")
         .map(std::path::PathBuf::from)
@@ -1239,6 +1260,7 @@ pub fn run() {
             viz_sample_rate,
             start_visualizer,
             stop_visualizer,
+            open_visualizer_window,
             set_loop,
             clear_loop,
             get_analysis,
