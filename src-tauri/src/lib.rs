@@ -472,6 +472,67 @@ fn stop_recording(engine: EngineState) {
     engine.send(Cmd::StopRecord);
 }
 
+// ---------------------------------------------------------------------------
+// Spectral visualizer tap
+// ---------------------------------------------------------------------------
+
+/// The visualizer sizes its FFT from the device rate, so it has to ask before
+/// it configures anything — and ask again whenever the output device changes.
+#[tauri::command]
+fn viz_sample_rate(engine: EngineState) -> u32 {
+    engine.sample_rate()
+}
+
+/// Stream post-limiter mono frames to the webview.
+///
+/// The audio thread only ever pushes into the ring (see `Cmd::StartViz`); this
+/// thread does the draining and the IPC. Running the FFT on the audio thread
+/// would risk an overrun, and an overrun is an audible click.
+#[tauri::command]
+fn start_visualizer(
+    engine: EngineState,
+    channel: tauri::ipc::Channel<tauri::ipc::InvokeResponseBody>,
+) {
+    // ~2.7 s of mono float at 48 k. The drain runs every 10 ms, so this is
+    // enormous slack; it exists so that a stalled webview can never apply
+    // back-pressure to the audio thread.
+    let (producer, mut consumer) = rtrb::RingBuffer::<f32>::new(1 << 17);
+    engine.send(Cmd::StartViz(Box::new(producer)));
+
+    std::thread::spawn(move || {
+        let mut batch: Vec<f32> = Vec::with_capacity(4096);
+        loop {
+            batch.clear();
+            while let Ok(s) = consumer.pop() {
+                batch.push(s);
+            }
+            if consumer.is_abandoned() && batch.is_empty() {
+                break;
+            }
+            if !batch.is_empty() {
+                let mut bytes = Vec::with_capacity(batch.len() * 4);
+                for s in &batch {
+                    bytes.extend_from_slice(&s.to_le_bytes());
+                }
+                // A closed channel means the webview went away, which is a
+                // normal shutdown rather than an error worth reporting.
+                if channel
+                    .send(tauri::ipc::InvokeResponseBody::Raw(bytes))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    });
+}
+
+#[tauri::command]
+fn stop_visualizer(engine: EngineState) {
+    engine.send(Cmd::StopViz);
+}
+
 fn dirs_home() -> std::path::PathBuf {
     std::env::var_os("HOME")
         .map(std::path::PathBuf::from)
@@ -1175,6 +1236,9 @@ pub fn run() {
             set_key_shift,
             start_recording,
             stop_recording,
+            viz_sample_rate,
+            start_visualizer,
+            stop_visualizer,
             set_loop,
             clear_loop,
             get_analysis,

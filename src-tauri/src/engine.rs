@@ -111,6 +111,8 @@ pub enum Cmd {
     },
     StartRecord(Box<rtrb::Producer<f32>>),
     StopRecord,
+    StartViz(Box<rtrb::Producer<f32>>),
+    StopViz,
     SetGain {
         deck: usize,
         value: f32,
@@ -361,6 +363,9 @@ struct AudioState {
     scratch: Vec<f32>,
     deck_bufs: [Vec<f32>; NUM_DECKS],
     rec_tx: Option<Box<rtrb::Producer<f32>>>,
+    /// Post-limiter tap feeding the spectral visualizer. Same best-effort
+    /// contract as `rec_tx`: never block the audio thread.
+    viz_tx: Option<Box<rtrb::Producer<f32>>>,
     master_peak_l: f32,
     master_peak_r: f32,
 }
@@ -488,6 +493,8 @@ impl AudioState {
                     // finalize the file.
                     self.rec_tx = None;
                 }
+                Cmd::StartViz(producer) => self.viz_tx = Some(producer),
+                Cmd::StopViz => self.viz_tx = None,
             }
         }
     }
@@ -579,6 +586,13 @@ impl AudioState {
                 // ever blocking the audio thread.
                 let _ = rec.push(l);
                 let _ = rec.push(r);
+            }
+            if let Some(viz) = &mut self.viz_tx {
+                // Mono: the spectral analysis is mono anyway, so downmixing
+                // here halves the IPC traffic. Dropping a sample makes the
+                // visualizer skip a frame, which is invisible; blocking the
+                // audio thread to avoid that would be audible.
+                let _ = viz.push((l + r) * 0.5);
             }
             let pl = l.abs();
             let pr = r.abs();
@@ -701,6 +715,7 @@ pub fn spawn_stream(device_name: Option<String>, shared: Arc<Shared>) -> Result<
                     scratch: vec![0.0; 16384],
                     deck_bufs: [vec![0.0; 16384], vec![0.0; 16384]],
                     rec_tx: None,
+                    viz_tx: None,
                     master_peak_l: 0.0,
                     master_peak_r: 0.0,
                 };
