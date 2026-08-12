@@ -79,6 +79,16 @@ export class StftAnalyzer {
   /** Slowly-decaying peak level for auto-gain, in dB. */
   private agcPeak = -60;
   private readonly agcRelease: number;
+  /**
+   * Smoothing coefficients derived from time constants rather than written as
+   * per-frame numbers. A fixed per-frame coefficient means the picture's
+   * dynamics change whenever the hop changes — `ultra` runs at 375 frames/sec
+   * against `coarse`'s 47, so the same constant would settle eight times
+   * faster and the whole image would visibly twitch. These make every Detail
+   * preset behave identically in wall-clock terms.
+   */
+  private readonly coherenceAlpha: number;
+  private readonly agcAttackAlpha: number;
   /** Per-bin smoothed coherence. Raw coherence is a frame-to-frame comparison,
    *  so on any band that is borderline tonal it flickers hard enough to strobe. */
   private readonly coherenceEma: Float32Array;
@@ -108,6 +118,10 @@ export class StftAnalyzer {
     // ~8 dB/second, so the picture re-normalizes over about a second instead
     // of pumping visibly on every transient.
     this.agcRelease = 8 / this.framesPerSecond;
+    const perFrame = (tauSeconds: number) =>
+      1 - Math.exp(-1 / (this.framesPerSecond * tauSeconds));
+    this.coherenceAlpha = perFrame(COHERENCE_TAU);
+    this.agcAttackAlpha = perFrame(AGC_ATTACK_TAU);
 
     this.pixels = new Uint8Array(N_BINS * 4);
 
@@ -222,7 +236,9 @@ export class StftAnalyzer {
       // arrives, but a single unstable frame must not strobe it back to grey.
       const prevCoh = this.coherenceEma[i];
       coherence =
-        coherence > prevCoh ? coherence : prevCoh * 0.82 + coherence * 0.18;
+        coherence > prevCoh
+          ? coherence
+          : prevCoh + (coherence - prevCoh) * this.coherenceAlpha;
       this.coherenceEma[i] = coherence;
 
       // --- spectral flux → transient bloom -----------------------------------
@@ -255,7 +271,7 @@ export class StftAnalyzer {
     // picture's brightness frame to frame, which reads as vertical banding
     // across the waterfall; ease into rises and fall back at a fixed dB/sec.
     if (framePeakDb > this.agcPeak) {
-      this.agcPeak += (framePeakDb - this.agcPeak) * 0.25;
+      this.agcPeak += (framePeakDb - this.agcPeak) * this.agcAttackAlpha;
     } else {
       this.agcPeak = Math.max(-60, this.agcPeak - this.agcRelease);
     }
@@ -281,6 +297,11 @@ export class StftAnalyzer {
 
 /** Normalized level below which a band is treated as silence. */
 const NOISE_GATE = 0.18;
+
+/** Release time for per-bin tonal coherence, in seconds. */
+const COHERENCE_TAU = 0.15;
+/** How fast auto-gain climbs toward a louder peak, in seconds. */
+const AGC_ATTACK_TAU = 0.075;
 
 function clamp01(x: number): number {
   return x < 0 ? 0 : x > 1 ? 1 : x;

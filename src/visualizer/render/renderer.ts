@@ -14,6 +14,11 @@ export type Mode = (typeof MODES)[number];
  */
 export const HISTORY = 4096;
 
+/** How fast the overall level envelope tracks, in seconds. */
+const LEVEL_TAU = 0.1;
+/** How fast the onset bloom decays, in seconds. */
+const FLUX_TAU = 0.16;
+
 export interface RenderParams {
   /** Seconds of history on screen — your 5–10 s slider. */
   windowSeconds: number;
@@ -144,8 +149,18 @@ export class Renderer {
     );
 
     // Attack fast, release slow: onsets should pop, then settle.
-    this.smoothLevel += (stats.level - this.smoothLevel) * 0.2;
-    this.smoothFlux = Math.max(this.smoothFlux * 0.88, stats.flux);
+    //
+    // Derived from time constants, not written as per-frame numbers. Frames
+    // arrive anywhere from 47/sec (coarse) to 375/sec (ultra), so a fixed
+    // coefficient would make the bloom breathe eight times faster at the
+    // finest Detail setting — which reads as the whole picture racing.
+    const dt = 1 / this.framesPerSecond;
+    this.smoothLevel +=
+      (stats.level - this.smoothLevel) * (1 - Math.exp(-dt / LEVEL_TAU));
+    this.smoothFlux = Math.max(
+      this.smoothFlux * Math.exp(-dt / FLUX_TAU),
+      stats.flux,
+    );
   }
 
   draw(dtSeconds: number): void {

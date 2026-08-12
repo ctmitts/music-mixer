@@ -26,9 +26,9 @@ const DETAIL_LABELS: Record<DetailName, string> = {
   ultra: "Ultra — sharpest transients",
 };
 
-// The window spans 0.125 s to 20 s — a 160x range, so the slider is
+// The window spans 0.5 s to 20 s — a 40x range, so the slider is
 // logarithmic. Linear steps would make everything below 2 s unreachable.
-const WIN_MIN = 0.125;
+const WIN_MIN = 0.5;
 const WIN_MAX = 20;
 const winFromSlider = (t: number) =>
   WIN_MIN * Math.pow(WIN_MAX / WIN_MIN, t / 1000);

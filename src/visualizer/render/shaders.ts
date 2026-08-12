@@ -98,6 +98,26 @@ vec3 oklabToLinearSrgb(vec3 c) {
    -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s);
 }
 
+/**
+ * Highlight rolloff.
+ *
+ * Loud, heavily-limited masters push most bands near the top of the AGC range,
+ * and once the crest bloom and the flow-mode gain stack on top, channels run
+ * well past 1.0. Hard clipping turns every energetic partial pure white —
+ * exactly where the pitch-class hue is most worth seeing. Compressing by
+ * luminance instead scales all three channels together, so highlights roll off
+ * toward white smoothly while keeping their colour.
+ */
+vec3 tonemap(vec3 c) {
+  const float KNEE = 0.70;
+  float lum = dot(c, vec3(0.2126, 0.7152, 0.0722));
+  if (lum <= KNEE) return c;
+  float over = lum - KNEE;
+  // Asymptotes to 1.0 as lum grows, and is C1-continuous at the knee.
+  float mapped = KNEE + over / (1.0 + over / (1.0 - KNEE));
+  return c * (mapped / max(lum, 1e-5));
+}
+
 vec3 linearToSrgb(vec3 c) {
   c = max(c, vec3(0.0));
   return mix(12.92 * c, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
@@ -112,7 +132,12 @@ vec3 linearToSrgb(vec3 c) {
  *   transient  → additive white bloom
  */
 vec3 spectralColor(vec4 s) {
-  float mag = pow(s.r * uGain, 1.3);
+  // Clamped: gain can push s.r * uGain well past 1, and an unclamped mag both
+  // drives Oklab lightness beyond 1 and sends the chroma falloff term
+  // (1 - 0.55 * mag) negative — at which point colour is mathematically gone
+  // and everything loud renders as blown white. With the clamp, extra gain
+  // saturates instead of exploding.
+  float mag = pow(clamp(s.r * uGain, 0.0, 1.0), 1.3);
   float hue = fract(s.g + uHueRotate) * TAU;
   float coh = s.b;
   float tr  = s.a;
@@ -219,6 +244,12 @@ vec3 modeMandala(vec2 uv) {
 // because the gradient of a spectrogram genuinely is the direction energy is
 // travelling.
 // ---------------------------------------------------------------------------
+// NOTE: this is the original RGB-averaging LIC, deliberately restored. A
+// data-space rewrite (averaging pitch class as a unit vector) measured far
+// worse: flow streamlines cross unrelated notes BY DESIGN, so hue disagreement
+// along a path is the normal case, and the resultant-length "agreement" term
+// drained saturation to 0.04. Averaging in RGB keeps mixed paths colourful;
+// the tonemap now handles the brightness this stacks up.
 vec3 modeFlow(vec2 uv) {
   vec2 p = uv;
   vec3 acc = vec3(0.0);
@@ -256,6 +287,7 @@ vec3 modeFlow(vec2 uv) {
 
   return acc / wsum * 1.5;
 }
+
 
 // ---------------------------------------------------------------------------
 // Mode 3 — harmonic helix / chroma torus.
@@ -310,6 +342,6 @@ void main() {
   float vign = 1.0 - 0.55 * length(uv - 0.5);
   col *= vign * (1.0 + uFlux * 0.55);
 
-  fragColor = vec4(linearToSrgb(col), 1.0);
+  fragColor = vec4(linearToSrgb(tonemap(col)), 1.0);
 }
 `;
