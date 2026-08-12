@@ -913,6 +913,19 @@ impl Engine {
     }
 }
 
+/// Name of the current system default output.
+///
+/// AirPlay destinations are not enumerable CoreAudio devices — macOS routes
+/// them at the system level, so an Apple TV never appears in
+/// [`list_output_devices`]. The only way to reach one is to follow whatever
+/// the system default currently is, which means noticing when the user
+/// switches it in Control Center. Cheap enough to poll.
+pub fn default_output_name() -> Option<String> {
+    cpal::default_host()
+        .default_output_device()
+        .and_then(|d| d.name().ok())
+}
+
 pub fn list_output_devices() -> Result<(Vec<String>, Option<String>)> {
     let host = cpal::default_host();
     let default_name = host.default_output_device().and_then(|d| d.name().ok());

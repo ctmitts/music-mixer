@@ -5,8 +5,14 @@ import type { FrameStats } from "../core/stft";
 export const MODES = ["waterfall", "mandala", "flow", "helix"] as const;
 export type Mode = (typeof MODES)[number];
 
-/** Rows of spectral history kept on the GPU. At ~47 fps this is ~21 s. */
-const HISTORY = 1024;
+/**
+ * Rows of spectral history kept on the GPU.
+ *
+ * Sized so that even the finest hop still buys ~20 s of scrollback: at hop 256
+ * (187 frames/sec) this is 21.8 s, and at hop 1024 it is 87 s. Costs
+ * 324 × 4096 × 4 B ≈ 5.3 MB of texture, which is nothing.
+ */
+export const HISTORY = 4096;
 
 export interface RenderParams {
   /** Seconds of history on screen — your 5–10 s slider. */

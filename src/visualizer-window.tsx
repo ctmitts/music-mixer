@@ -8,7 +8,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import ReactDOM from "react-dom/client";
-import { Visualizer } from "./visualizer/visualizer";
+import { Visualizer, DETAIL_PRESETS, type DetailName } from "./visualizer/visualizer";
 import { TauriSource } from "./visualizer/sources/tauri";
 import { MODES, type Mode } from "./visualizer/render/renderer";
 
@@ -19,6 +19,24 @@ const SYNC_PRESETS: { label: string; ms: number }[] = [
   { label: "AirPlay", ms: 1800 },
 ];
 
+const DETAIL_LABELS: Record<DetailName, string> = {
+  coarse: "Coarse — best pitch",
+  balanced: "Balanced",
+  fine: "Fine",
+  ultra: "Ultra — sharpest transients",
+};
+
+// The window spans 0.125 s to 20 s — a 160x range, so the slider is
+// logarithmic. Linear steps would make everything below 2 s unreachable.
+const WIN_MIN = 0.125;
+const WIN_MAX = 20;
+const winFromSlider = (t: number) =>
+  WIN_MIN * Math.pow(WIN_MAX / WIN_MIN, t / 1000);
+const sliderFromWin = (s: number) =>
+  (1000 * Math.log(s / WIN_MIN)) / Math.log(WIN_MAX / WIN_MIN);
+const fmtWin = (s: number) =>
+  s < 1 ? `${Math.round(s * 1000)} ms` : `${s.toFixed(1)} s`;
+
 function VisualizerWindow() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const vizRef = useRef<Visualizer | null>(null);
@@ -26,6 +44,12 @@ function VisualizerWindow() {
   const [mode, setMode] = useState<Mode>("mandala");
   const [windowSeconds, setWindowSeconds] = useState(10);
   const [syncMs, setSyncMs] = useState(30);
+  const [detail, setDetail] = useState<DetailName>("balanced");
+  // Explicit generic: DETAIL_PRESETS is `as const`, so the initializer would
+  // otherwise narrow this state to the literal 85.
+  const [analysisMs, setAnalysisMs] = useState<number>(
+    DETAIL_PRESETS.balanced.windowMs,
+  );
   const [chromeVisible, setChromeVisible] = useState(true);
 
   useEffect(() => {
@@ -72,6 +96,15 @@ function VisualizerWindow() {
   useEffect(() => {
     if (vizRef.current) vizRef.current.params.syncOffsetMs = syncMs;
   }, [syncMs]);
+
+  useEffect(() => {
+    const viz = vizRef.current;
+    if (!viz) return;
+    viz.setDetail(detail);
+    // Report the real analysis window, which depends on the engine's device
+    // rate — that length, not the hop, is the floor on time resolution.
+    setAnalysisMs(viz.analysisWindowMs);
+  }, [detail]);
 
   const toggleFullscreen = useCallback(() => {
     if (document.fullscreenElement) void document.exitFullscreen();
@@ -156,14 +189,36 @@ function VisualizerWindow() {
           ))}
         </div>
 
+        <label
+          style={{ fontSize: 11, color: "#8a92ad", display: "flex", gap: 7, alignItems: "center" }}
+          title={`Analysis window ${Math.round(analysisMs)} ms — the floor on time resolution. A display window shorter than this cannot resolve anything finer.`}
+        >
+          Detail
+          <select
+            value={detail}
+            onChange={(e) => setDetail(e.target.value as DetailName)}
+            style={{
+              font: "inherit", fontSize: 11, padding: "4px 6px", borderRadius: 6,
+              background: "rgba(255,255,255,0.06)", color: "#cfd4e4",
+              border: "1px solid rgba(255,255,255,0.1)",
+            }}
+          >
+            {(Object.keys(DETAIL_PRESETS) as DetailName[]).map((d) => (
+              <option key={d} value={d}>{DETAIL_LABELS[d]}</option>
+            ))}
+          </select>
+          <span style={{ color: "#cfd4e4", width: 42 }}>{Math.round(analysisMs)} ms</span>
+        </label>
+
         <label style={{ fontSize: 11, color: "#8a92ad", display: "flex", gap: 7, alignItems: "center" }}>
           Window
           <input
-            type="range" min={2} max={20} step={0.5} value={windowSeconds}
-            onChange={(e) => setWindowSeconds(+e.target.value)}
+            type="range" min={0} max={1000} step={1}
+            value={sliderFromWin(windowSeconds)}
+            onChange={(e) => setWindowSeconds(winFromSlider(+e.target.value))}
             style={{ width: 90, accentColor: "#a05cff" }}
           />
-          <span style={{ color: "#cfd4e4", width: 38 }}>{windowSeconds.toFixed(1)}s</span>
+          <span style={{ color: "#cfd4e4", width: 46 }}>{fmtWin(windowSeconds)}</span>
         </label>
 
         <label

@@ -1181,6 +1181,53 @@ struct EngineSnapshot {
     sample_rate: u32,
 }
 
+/// Follow the system default output while the user is on "System default".
+///
+/// This is what makes AirPlay work at all. Selecting an Apple TV in Control
+/// Center changes the CoreAudio default device, but a cpal stream is bound to
+/// the device it resolved at build time and keeps playing to the old one — so
+/// without this, choosing AirPlay silently leaves the mix on the laptop
+/// speakers. cpal does not surface CoreAudio's default-changed notification,
+/// hence the poll.
+///
+/// An explicitly chosen device is never overridden; only "System default"
+/// follows.
+fn spawn_default_device_watcher(app: tauri::AppHandle, engine: Arc<Engine>) {
+    std::thread::spawn(move || {
+        let mut last = engine::default_output_name();
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(1500));
+
+            let following = engine
+                .conn
+                .lock()
+                .map(|c| c.device_name.is_none())
+                .unwrap_or(false);
+            let current = engine::default_output_name();
+            if !following {
+                // Keep the baseline fresh so returning to "System default"
+                // does not immediately fire on a change made while pinned.
+                last = current;
+                continue;
+            }
+            if current.is_some() && current != last {
+                last = current.clone();
+                match switch_device(&engine, None) {
+                    Ok(rate) => {
+                        // The visualizer sizes its FFT from the device rate, so
+                        // it has to know when that changes.
+                        let _ = app.emit(
+                            "output-device-changed",
+                            serde_json::json!({ "device": current, "sampleRate": rate }),
+                        );
+                    }
+                    Err(e) => eprintln!("failed to follow default output device: {e}"),
+                }
+            }
+        }
+    });
+}
+
 fn spawn_state_emitter(app: tauri::AppHandle, engine: Arc<Engine>) {
     std::thread::spawn(move || loop {
         let rate = engine.shared.sample_rate.load(Ordering::Relaxed).max(1) as f64;
@@ -1234,6 +1281,7 @@ pub fn run() {
                 Arc::new(db::Db::open(&data_dir).expect("failed to open database"));
             app.manage(database);
             spawn_state_emitter(app.handle().clone(), engine.clone());
+            spawn_default_device_watcher(app.handle().clone(), engine.clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
