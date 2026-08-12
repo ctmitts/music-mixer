@@ -8,9 +8,9 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import ReactDOM from "react-dom/client";
-import { Visualizer, DETAIL_PRESETS, type DetailName } from "./visualizer/visualizer";
-import { TauriSource } from "./visualizer/sources/tauri";
-import { MODES, type Mode } from "./visualizer/render/renderer";
+import { Visualizer, DETAIL_PRESETS, type DetailName } from "spectral-visualizer";
+import { TauriSource } from "spectral-visualizer/sources/tauri";
+import { MODES, type Mode } from "spectral-visualizer/render";
 
 /** Latency presets for the usual ways of getting sound to a TV. */
 const SYNC_PRESETS: { label: string; ms: number }[] = [

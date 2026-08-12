@@ -28,6 +28,11 @@ export default defineConfig(async () => ({
     port: 1420,
     strictPort: true,
     host: host || false,
+    fs: {
+      // spectral-visualizer is npm-linked from a sibling checkout; Vite must be
+      // allowed to serve its source through the symlink in dev.
+      allow: [".", "../repos/music-visualizer"],
+    },
     hmr: host
       ? {
           protocol: "ws",
