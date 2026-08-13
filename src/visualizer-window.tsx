@@ -113,7 +113,11 @@ function VisualizerWindow() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key >= "1" && e.key <= "4") setMode(MODES[+e.key - 1]);
+      // Bounded by MODES.length, not a hardcoded digit, so new modes in the
+      // package get a key without this file changing.
+      const modeIdx = +e.key - 1;
+      if (e.key >= "1" && e.key <= "9" && modeIdx < MODES.length)
+        setMode(MODES[modeIdx]);
       else if (e.key.toLowerCase() === "f") toggleFullscreen();
       else if (e.key.toLowerCase() === "h") setChromeVisible((v) => !v);
     };
