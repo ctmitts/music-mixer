@@ -12,11 +12,17 @@ import { Visualizer } from "spectral-visualizer";
 import { TauriSource } from "spectral-visualizer/sources/tauri";
 import { MODES, type Mode } from "spectral-visualizer/render";
 
-/** Latency presets for the usual ways of getting sound to a TV. */
+/**
+ * Delay presets, NOT output destinations.
+ *
+ * These only shift the picture later to match how long audio takes to reach
+ * the listener. Naming them after devices made it look like a routing control,
+ * which it has never been — routing is done in macOS Control Center.
+ */
 const SYNC_PRESETS: { label: string; ms: number }[] = [
-  { label: "Built-in / HDMI", ms: 30 },
-  { label: "AV receiver", ms: 120 },
-  { label: "AirPlay", ms: 1800 },
+  { label: "30 ms \u00b7 built-in / HDMI", ms: 30 },
+  { label: "120 ms \u00b7 AV receiver", ms: 120 },
+  { label: "1800 ms \u00b7 AirPlay", ms: 1800 },
 ];
 
 // The window spans 0.5 s to 20 s — a 40x range, so the slider is
@@ -184,9 +190,9 @@ function VisualizerWindow() {
 
         <label
           style={{ fontSize: 11, color: "#8a92ad", display: "flex", gap: 7, alignItems: "center" }}
-          title="The tap is pre-device, so the picture runs ahead of what you hear by the output latency. AirPlay needs ~1.8 s."
+          title="Delays the PICTURE only — it does not route audio anywhere. Choose the output device in macOS Control Center; this just compensates for that path's latency."
         >
-          A/V sync
+          Video delay
           <select
             value={SYNC_PRESETS.some((p) => p.ms === syncMs) ? syncMs : "custom"}
             onChange={(e) => setSyncMs(+e.target.value)}
