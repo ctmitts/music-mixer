@@ -8,7 +8,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import ReactDOM from "react-dom/client";
-import { Visualizer, DETAIL_PRESETS, type DetailName } from "spectral-visualizer";
+import { Visualizer } from "spectral-visualizer";
 import { TauriSource } from "spectral-visualizer/sources/tauri";
 import { MODES, type Mode } from "spectral-visualizer/render";
 
@@ -18,13 +18,6 @@ const SYNC_PRESETS: { label: string; ms: number }[] = [
   { label: "AV receiver", ms: 120 },
   { label: "AirPlay", ms: 1800 },
 ];
-
-const DETAIL_LABELS: Record<DetailName, string> = {
-  coarse: "Coarse — best pitch",
-  balanced: "Balanced",
-  fine: "Fine",
-  ultra: "Ultra — sharpest transients",
-};
 
 // The window spans 0.5 s to 20 s — a 40x range, so the slider is
 // logarithmic. Linear steps would make everything below 2 s unreachable.
@@ -44,12 +37,6 @@ function VisualizerWindow() {
   const [mode, setMode] = useState<Mode>("mandala");
   const [windowSeconds, setWindowSeconds] = useState(10);
   const [syncMs, setSyncMs] = useState(30);
-  const [detail, setDetail] = useState<DetailName>("balanced");
-  // Explicit generic: DETAIL_PRESETS is `as const`, so the initializer would
-  // otherwise narrow this state to the literal 85.
-  const [analysisMs, setAnalysisMs] = useState<number>(
-    DETAIL_PRESETS.balanced.windowMs,
-  );
   const [chromeVisible, setChromeVisible] = useState(true);
 
   useEffect(() => {
@@ -96,15 +83,6 @@ function VisualizerWindow() {
   useEffect(() => {
     if (vizRef.current) vizRef.current.params.syncOffsetMs = syncMs;
   }, [syncMs]);
-
-  useEffect(() => {
-    const viz = vizRef.current;
-    if (!viz) return;
-    viz.setDetail(detail);
-    // Report the real analysis window, which depends on the engine's device
-    // rate — that length, not the hop, is the floor on time resolution.
-    setAnalysisMs(viz.analysisWindowMs);
-  }, [detail]);
 
   const toggleFullscreen = useCallback(() => {
     if (document.fullscreenElement) void document.exitFullscreen();
@@ -192,27 +170,6 @@ function VisualizerWindow() {
             </button>
           ))}
         </div>
-
-        <label
-          style={{ fontSize: 11, color: "#8a92ad", display: "flex", gap: 7, alignItems: "center" }}
-          title={`Analysis window ${Math.round(analysisMs)} ms — the floor on time resolution. A display window shorter than this cannot resolve anything finer.`}
-        >
-          Detail
-          <select
-            value={detail}
-            onChange={(e) => setDetail(e.target.value as DetailName)}
-            style={{
-              font: "inherit", fontSize: 11, padding: "4px 6px", borderRadius: 6,
-              background: "rgba(255,255,255,0.06)", color: "#cfd4e4",
-              border: "1px solid rgba(255,255,255,0.1)",
-            }}
-          >
-            {(Object.keys(DETAIL_PRESETS) as DetailName[]).map((d) => (
-              <option key={d} value={d}>{DETAIL_LABELS[d]}</option>
-            ))}
-          </select>
-          <span style={{ color: "#cfd4e4", width: 42 }}>{Math.round(analysisMs)} ms</span>
-        </label>
 
         <label style={{ fontSize: 11, color: "#8a92ad", display: "flex", gap: 7, alignItems: "center" }}>
           Window
