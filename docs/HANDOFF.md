@@ -104,19 +104,47 @@ filter sweep, tempo-synced delay, Freeverb reverb), mix-bus WAV recording to
   ("sax rip", "vocals enter"); stored in the cues table (`label` column),
   shown in tooltips, on both deck waveforms, and in the mix view.
 
+- **Taste tracking** (2026-08-11, phase ②) — three new tables. `plays` gets a
+  row per play with `secs_played` accumulated by `PlayTracker` (in-memory,
+  flushed every 5 s from the 30 Hz emitter thread; a resume after pause keeps
+  the same row, a new track opens another). `taste` holds loved/banned.
+  `transitions` logs every real A→B mix — the labelled data a personal
+  transition model gets trained on later. Love/ban buttons on each deck, a
+  Plays column + ♥ toggle + "♥ Loved" filter in the library.
+- **Taste in the recommender** — banned tracks are dropped from the pool
+  outright; loved (×1.25), Last.fm-similar (×1.12), and saturating
+  familiarity (up to ×1.10) are *multipliers* on the mixability score, never
+  extra scoring weight, so a loved track in the wrong key still loses.
+  `agent::format_taste` puts loved and most-played **artists** in the prompt.
+- **Last.fm** (`lastfm.rs`) — `artist.getSimilar` cached in `similar_artists`
+  for a week, used to flag candidate artists similar to the reference track;
+  scrobbling via the standard desktop auth dance (key+secret → Authorize opens
+  the browser → Connect trades the token for a permanent session key), flushed
+  every 60 s using Last.fm's own half-track-or-4-minutes rule. Entirely
+  optional: no key, no session, or a network error changes nothing.
+  `examples/taste_check.rs` verifies the schema and play/scrobble bookkeeping
+  against the real DB.
+
 **Caveats shared by quantize/sync/mix-view** — the analyser's bar-1 anchor is
 its first detected beat, so bar/phrase alignment is self-consistent per track
 but can be offset from the true musical downbeat; and key-lock stretcher
 latency is not modeled, so decks with different key-lock states land a few ms
 apart.
 
-**Agreed roadmap (2026-08-10)** — phases, in order: ① sync & alignment (done,
-above) → ② persistent taste DB (plays/skips/loves/transitions tables) +
-Last.fm similarity & scrobbling (user opted in) → ③ set generation: beam
-search over a transition-cost graph with target energy curves, seeded-radio
-mode → ④ structure detection (intro/build/drop/outro; also upgrades mix-view
-suggestions) → ⑤ automix. Design rationale in the 2026-08-10 session; the
-Pandora API is dead/ToS-blocked — Last.fm chosen instead.
+**Agreed roadmap (2026-08-10)** — phases, in order: ① sync & alignment (done)
+→ ② persistent taste DB + Last.fm (done) → ③ set generation: beam search over
+a transition-cost graph with target energy curves (ramp/wave/plateau/descent),
+seeded-radio mode → ④ structure detection (intro/build/drop/outro; also
+upgrades mix-view suggestions and fixes the bar-1 anchor problem) → ⑤ automix.
+The Pandora API is dead/ToS-blocked — Last.fm chosen instead.
+
+**Phase ③ notes, for when it starts.** Don't call `rank()` repeatedly: greedy
+nearest-neighbour drifts and produces no arc. Model it as beam search (width
+~20) over a graph whose edge cost A→B combines the existing `key_score` and
+`tempo_score` with energy/brightness deltas, an artist-repetition penalty, and
+the taste multipliers — plus a path term for `|energy(t) − curve(t)|` against
+the chosen arc. The `transitions` table is already accumulating real examples
+to fit those weights against.
 
 ---
 

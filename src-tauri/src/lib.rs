@@ -4,6 +4,7 @@ pub mod db;
 pub mod decode;
 pub mod dsp;
 pub mod engine;
+pub mod lastfm;
 pub mod library;
 pub mod recommend;
 
@@ -55,14 +56,82 @@ struct SessionHistory(std::sync::Mutex<Vec<PlayedTrack>>);
 
 const HISTORY_CAP: usize = 60;
 
+/// An open row in the `plays` table for a deck. Listened seconds accumulate
+/// in memory and flush periodically — the alternative, writing on every 30 Hz
+/// tick, would be thousands of pointless UPDATEs per track.
+struct DeckPlay {
+    path: String,
+    play_id: i64,
+    /// Accumulated but not yet written to the DB.
+    pending: f64,
+}
+
+struct PlayTracker(std::sync::Mutex<[Option<DeckPlay>; NUM_DECKS]>);
+
+/// Seconds of listening to buffer before writing.
+const PLAY_FLUSH_SECS: f64 = 5.0;
+
+impl PlayTracker {
+    /// Note that `deck` has started playing `path`. Resuming the same track
+    /// after a pause keeps the existing row; a genuinely new track closes the
+    /// old one and opens another.
+    fn start(&self, database: &db::Db, deck: usize, path: &str, track_secs: f64) {
+        let mut slots = self.0.lock().unwrap();
+        if let Some(cur) = &slots[deck] {
+            if cur.path == path {
+                return;
+            }
+            database.add_play_time(cur.play_id, cur.pending);
+        }
+        slots[deck] = Some(DeckPlay {
+            path: path.to_string(),
+            play_id: database.open_play(path, track_secs),
+            pending: 0.0,
+        });
+    }
+
+    /// Flush and forget a deck's open play (track replaced, or shutdown).
+    fn close(&self, database: &db::Db, deck: usize) {
+        let mut slots = self.0.lock().unwrap();
+        if let Some(cur) = slots[deck].take() {
+            database.add_play_time(cur.play_id, cur.pending);
+        }
+    }
+
+    /// Credit `dt` seconds to every deck currently playing, writing through
+    /// once a deck has banked more than `PLAY_FLUSH_SECS`.
+    fn tick(&self, database: &db::Db, playing: [bool; NUM_DECKS], dt: f64) {
+        let mut slots = self.0.lock().unwrap();
+        for (deck, slot) in slots.iter_mut().enumerate() {
+            let Some(cur) = slot else { continue };
+            if !playing[deck] {
+                continue;
+            }
+            cur.pending += dt;
+            if cur.pending >= PLAY_FLUSH_SECS {
+                database.add_play_time(cur.play_id, cur.pending);
+                cur.pending = 0.0;
+            }
+        }
+    }
+}
+
 /// Record a track as played. Skips anything already among the last few
 /// entries: pausing deck A, playing deck B, then resuming A is one continuous
 /// mix, not three plays, and logging it as three both clutters the set list
 /// and skews the "what have I been playing" context.
 fn record_played(history: &SessionHistory, database: &db::Db, path: &str) {
     let mut log = history.0.lock().unwrap();
+    // The previously played track, before this one is appended — the "from"
+    // side of a transition.
+    let previous = log.last().map(|e| e.path.clone());
     if log.iter().rev().take(3).any(|e| e.path == path) {
         return;
+    }
+    if let Some(from) = previous {
+        if from != path {
+            database.log_transition(&from, path);
+        }
     }
     let meta = library::track_meta(path);
     let a = database.get_analysis(path);
@@ -80,6 +149,32 @@ fn record_played(history: &SessionHistory, database: &db::Db, path: &str) {
         let excess = log.len() - HISTORY_CAP;
         log.drain(0..excess);
     }
+}
+
+/// A deck has been told to play: append to the set list, log the transition,
+/// and open a `plays` row so listening time starts accruing. Shared by the
+/// plain and quantized play paths.
+fn note_deck_playing(
+    engine: &Engine,
+    database: &db::Db,
+    history: &SessionHistory,
+    tracker: &PlayTracker,
+    deck: usize,
+) {
+    if deck >= NUM_DECKS {
+        return;
+    }
+    let loaded = {
+        let mirror = engine.mirror.lock().unwrap();
+        mirror.loaded[deck]
+            .as_ref()
+            .map(|t| (t.path.clone(), t.track.frames() as f64 / t.track.sample_rate as f64))
+    };
+    let Some((path, track_secs)) = loaded else {
+        return;
+    };
+    record_played(history, database, &path);
+    tracker.start(database, deck, &path, track_secs);
 }
 
 #[tauri::command]
@@ -200,12 +295,16 @@ async fn load_track(
     engine: EngineState<'_>,
     database: DbState<'_>,
     restore: State<'_, RestoreState>,
+    tracker: State<'_, PlayTracker>,
     deck: usize,
     path: String,
 ) -> Result<LoadResult, String> {
     if deck >= NUM_DECKS {
         return Err("invalid deck".into());
     }
+    // The outgoing track's listening time is banked now; the new one gets its
+    // own row when it's actually played.
+    tracker.close(&database, deck);
     let engine_rate = engine.sample_rate();
     let path2 = path.clone();
     let db2 = database.inner().clone();
@@ -288,22 +387,12 @@ fn play(
     engine: EngineState,
     database: DbState,
     history: State<'_, SessionHistory>,
+    tracker: State<'_, PlayTracker>,
     deck: usize,
 ) {
     // Log what actually gets played, not merely loaded — the set list is the
     // context the recommender reasons over.
-    if deck < NUM_DECKS {
-        let path = engine
-            .mirror
-            .lock()
-            .unwrap()
-            .loaded
-            .get(deck)
-            .and_then(|l| l.as_ref().map(|t| t.path.clone()));
-        if let Some(p) = path {
-            record_played(&history, &database, &p);
-        }
-    }
+    note_deck_playing(&engine, &database, &history, &tracker, deck);
     engine.send(Cmd::Play { deck });
 }
 
@@ -315,6 +404,7 @@ fn play_quantized(
     engine: EngineState,
     database: DbState,
     history: State<'_, SessionHistory>,
+    tracker: State<'_, PlayTracker>,
     deck: usize,
     master: usize,
     master_frame: f64,
@@ -324,16 +414,7 @@ fn play_quantized(
     }
     // Same set-list logging as a plain play; armed decks virtually always
     // fire within a bar or two.
-    let path = engine
-        .mirror
-        .lock()
-        .unwrap()
-        .loaded
-        .get(deck)
-        .and_then(|l| l.as_ref().map(|t| t.path.clone()));
-    if let Some(p) = path {
-        record_played(&history, &database, &p);
-    }
+    note_deck_playing(&engine, &database, &history, &tracker, deck);
     engine.send(Cmd::PlayQuantized {
         deck,
         master,
@@ -807,9 +888,25 @@ async fn recommend_tracks(
         agent::format_history(&recent)
     };
 
-    // Gather analyzed candidates off the UI thread.
+    // Gather analyzed candidates off the UI thread, each carrying what the
+    // DJ's own listening history says about it.
     let paths = args.paths.clone();
-    let candidates: Vec<recommend::Candidate> = tauri::async_runtime::spawn_blocking(move || {
+    let mut candidates: Vec<recommend::Candidate> = tauri::async_runtime::spawn_blocking(move || {
+        let taste: std::collections::HashMap<String, recommend::Taste> = db
+            .all_stats()
+            .into_iter()
+            .map(|(path, play_count, _secs, _last, loved, banned)| {
+                (
+                    path,
+                    recommend::Taste {
+                        play_count,
+                        loved,
+                        banned,
+                        similar_artist: false,
+                    },
+                )
+            })
+            .collect();
         paths
             .into_iter()
             .filter_map(|p| {
@@ -817,6 +914,7 @@ async fn recommend_tracks(
                 Some(recommend::Candidate {
                     meta: library::track_meta(&p),
                     analysis,
+                    taste: taste.get(&p).copied().unwrap_or_default(),
                 })
             })
             .collect()
@@ -827,6 +925,52 @@ async fn recommend_tracks(
     if candidates.is_empty() {
         return Err("No analyzed tracks yet — run Analyze on your library first.".into());
     }
+
+    // Optional Last.fm signal: artists similar to what's playing get a nudge.
+    // Purely additive — no key, no network, or an API error changes nothing.
+    if let (Some(api_key), Some(ref_path)) = (
+        database
+            .get_setting(lastfm::KEY_SETTING)
+            .filter(|k| !k.trim().is_empty()),
+        args.reference_path.as_ref(),
+    ) {
+        let seed_artist = library::track_meta(ref_path).artist;
+        let similar = lastfm::similar_artists(&database, &api_key, &seed_artist).await;
+        if !similar.is_empty() {
+            let set: std::collections::HashSet<String> =
+                similar.iter().map(|a| a.to_lowercase()).collect();
+            for c in &mut candidates {
+                let artist = c.meta.artist.to_lowercase();
+                if !artist.is_empty() && artist != seed_artist.to_lowercase() {
+                    c.taste.similar_artist = set.contains(&artist);
+                }
+            }
+        }
+    }
+
+    // Aggregate taste to the artist level for the prompt: individual track
+    // paths mean nothing to the model, but "you play a lot of Tosca" does.
+    let taste_text = {
+        let mut loved: Vec<String> = Vec::new();
+        let mut plays: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+        for c in &candidates {
+            let artist = c.meta.artist.trim();
+            if artist.is_empty() {
+                continue;
+            }
+            if c.taste.loved && !loved.iter().any(|a| a == artist) {
+                loved.push(artist.to_string());
+            }
+            if c.taste.play_count > 0 {
+                *plays.entry(artist.to_string()).or_insert(0) += c.taste.play_count;
+            }
+        }
+        loved.truncate(25);
+        let mut most_played: Vec<(String, i64)> = plays.into_iter().collect();
+        most_played.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        most_played.truncate(20);
+        agent::format_taste(&loved, &most_played)
+    };
 
     let reference = args
         .reference_path
@@ -916,6 +1060,7 @@ async fn recommend_tracks(
             &albums,
             notes.as_deref(),
             &history_text,
+            &taste_text,
         )
         .await
         {
@@ -976,6 +1121,128 @@ async fn recommend_tracks(
             })
         }
     }
+}
+
+/// Listening stats for the whole library, for the UI's play-count column and
+/// the recommender's familiarity signal.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct TrackStats {
+    path: String,
+    play_count: i64,
+    secs_played: f64,
+    last_played: i64,
+    loved: bool,
+    banned: bool,
+}
+
+#[tauri::command]
+fn get_track_stats(database: DbState) -> Vec<TrackStats> {
+    database
+        .all_stats()
+        .into_iter()
+        .map(
+            |(path, play_count, secs_played, last_played, loved, banned)| TrackStats {
+                path,
+                play_count,
+                secs_played,
+                last_played,
+                loved,
+                banned,
+            },
+        )
+        .collect()
+}
+
+/// Love and ban are mutually exclusive; setting one clears the other.
+#[tauri::command]
+fn set_taste(database: DbState, path: String, loved: bool, banned: bool) {
+    database.set_taste(&path, loved && !banned, banned);
+}
+
+// ---------------------------------------------------------------------------
+// Last.fm
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LastfmStatus {
+    has_key: bool,
+    connected: bool,
+    user: String,
+}
+
+#[tauri::command]
+fn lastfm_status(database: DbState) -> LastfmStatus {
+    let non_empty = |k: &str| {
+        database
+            .get_setting(k)
+            .filter(|v| !v.trim().is_empty())
+    };
+    LastfmStatus {
+        has_key: non_empty(lastfm::KEY_SETTING).is_some()
+            && non_empty(lastfm::SECRET_SETTING).is_some(),
+        connected: non_empty(lastfm::SESSION_SETTING).is_some(),
+        user: non_empty(lastfm::USER_SETTING).unwrap_or_default(),
+    }
+}
+
+#[tauri::command]
+fn set_lastfm_key(database: DbState, key: String, secret: String) {
+    database.set_setting(lastfm::KEY_SETTING, key.trim());
+    database.set_setting(lastfm::SECRET_SETTING, secret.trim());
+}
+
+/// Start the auth dance: returns the URL the user must open and approve.
+#[tauri::command]
+async fn lastfm_begin_auth(database: DbState<'_>) -> Result<String, String> {
+    let key = database
+        .get_setting(lastfm::KEY_SETTING)
+        .filter(|v| !v.trim().is_empty())
+        .ok_or("Add your Last.fm API key and secret first")?;
+    let (token, url) = lastfm::begin_auth(&key).await.map_err(err_str)?;
+    // Held so the finish step doesn't need the UI to round-trip it.
+    database.set_setting("lastfm_pending_token", &token);
+    Ok(url)
+}
+
+/// Finish auth after the user has approved in the browser.
+#[tauri::command]
+async fn lastfm_finish_auth(database: DbState<'_>) -> Result<String, String> {
+    let key = database
+        .get_setting(lastfm::KEY_SETTING)
+        .ok_or("no API key")?;
+    let secret = database
+        .get_setting(lastfm::SECRET_SETTING)
+        .ok_or("no API secret")?;
+    let token = database
+        .get_setting("lastfm_pending_token")
+        .ok_or("no pending authorization — start over")?;
+    let (session, user) = lastfm::finish_auth(&key, &secret, &token)
+        .await
+        .map_err(err_str)?;
+    database.set_setting(lastfm::SESSION_SETTING, &session);
+    database.set_setting(lastfm::USER_SETTING, &user);
+    database.set_setting("lastfm_pending_token", "");
+    Ok(user)
+}
+
+#[tauri::command]
+fn lastfm_disconnect(database: DbState) {
+    database.set_setting(lastfm::SESSION_SETTING, "");
+    database.set_setting(lastfm::USER_SETTING, "");
+}
+
+/// Periodically send qualifying plays to Last.fm. Cheap when unconfigured —
+/// `flush_scrobbles` returns immediately without a session key.
+fn spawn_scrobbler(database: Arc<db::Db>) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_secs(60));
+        let db = database.clone();
+        tauri::async_runtime::spawn(async move {
+            lastfm::flush_scrobbles(&db).await;
+        });
+    });
 }
 
 #[tauri::command]
@@ -1230,6 +1497,20 @@ fn spawn_default_device_watcher(app: tauri::AppHandle, engine: Arc<Engine>) {
 
 fn spawn_state_emitter(app: tauri::AppHandle, engine: Arc<Engine>) {
     std::thread::spawn(move || loop {
+        // Credit listening time to any open play rows. Sampling the playing
+        // flags here rather than timing them engine-side keeps the audio
+        // thread free of bookkeeping; at 33 ms the error per track is
+        // negligible against a half-track scrobble threshold.
+        {
+            let playing = [
+                engine.shared.decks[0].playing.load(Ordering::Relaxed),
+                engine.shared.decks[1].playing.load(Ordering::Relaxed),
+            ];
+            if playing.iter().any(|p| *p) {
+                let database = app.state::<Arc<db::Db>>();
+                app.state::<PlayTracker>().tick(&database, playing, 0.033);
+            }
+        }
         let rate = engine.shared.sample_rate.load(Ordering::Relaxed).max(1) as f64;
         let decks = engine
             .shared
@@ -1272,6 +1553,7 @@ pub fn run() {
         )))))
         .manage(RestoreState(std::sync::Mutex::new([None, None])))
         .manage(SessionHistory(std::sync::Mutex::new(Vec::new())))
+        .manage(PlayTracker(std::sync::Mutex::new([None, None])))
         .setup(move |app| {
             let data_dir = app
                 .path()
@@ -1279,9 +1561,10 @@ pub fn run() {
                 .expect("no app data dir");
             let database =
                 Arc::new(db::Db::open(&data_dir).expect("failed to open database"));
-            app.manage(database);
+            app.manage(database.clone());
             spawn_state_emitter(app.handle().clone(), engine.clone());
             spawn_default_device_watcher(app.handle().clone(), engine.clone());
+            spawn_scrobbler(database);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1321,6 +1604,13 @@ pub fn run() {
             clear_session_history,
             play_quantized,
             set_cue_label,
+            get_track_stats,
+            set_taste,
+            lastfm_status,
+            set_lastfm_key,
+            lastfm_begin_auth,
+            lastfm_finish_auth,
+            lastfm_disconnect,
             set_cue_point,
             list_output_devices,
             set_output_device,

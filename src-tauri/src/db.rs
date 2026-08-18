@@ -54,6 +54,47 @@ impl Db {
             "CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
+            );
+
+            -- One row per play. `secs_played` accumulates only while the deck
+            -- actually runs, so pausing mid-track doesn't inflate it and the
+            -- completion fraction stays an honest like/skip signal.
+            CREATE TABLE IF NOT EXISTS plays (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                path TEXT NOT NULL,
+                started_at INTEGER NOT NULL,
+                secs_played REAL NOT NULL DEFAULT 0,
+                track_secs REAL NOT NULL DEFAULT 0,
+                scrobbled INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS plays_path ON plays(path);
+
+            -- Explicit taste. Absent row = no opinion.
+            CREATE TABLE IF NOT EXISTS taste (
+                path TEXT PRIMARY KEY,
+                loved INTEGER NOT NULL DEFAULT 0,
+                banned INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER
+            );
+
+            -- Every real A->B mix: the labelled examples a personal
+            -- transition model is eventually trained on.
+            CREATE TABLE IF NOT EXISTS transitions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                from_path TEXT NOT NULL,
+                to_path TEXT NOT NULL,
+                at INTEGER NOT NULL,
+                rating INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS transitions_pair
+                ON transitions(from_path, to_path);
+
+            -- Cached Last.fm artist similarity, so the network is hit once
+            -- per artist rather than once per recommendation.
+            CREATE TABLE IF NOT EXISTS similar_artists (
+                artist TEXT PRIMARY KEY,
+                json TEXT NOT NULL,
+                fetched_at INTEGER NOT NULL
             );",
         )?;
         Ok(Db(Mutex::new(conn)))
@@ -203,5 +244,163 @@ impl Db {
             "UPDATE cues SET label = ?3 WHERE path = ?1 AND slot = ?2",
             params![path, slot as i64, label],
         );
+    }
+
+    // -- taste: plays, loves, transitions ---------------------------------
+
+    /// Open a play row and return its id, for `close_play` to finish.
+    pub fn open_play(&self, path: &str, track_secs: f64) -> i64 {
+        let conn = self.0.lock().unwrap();
+        match conn.execute(
+            "INSERT INTO plays (path, started_at, secs_played, track_secs)
+             VALUES (?1, strftime('%s','now'), 0, ?2)",
+            params![path, track_secs],
+        ) {
+            Ok(_) => conn.last_insert_rowid(),
+            Err(_) => 0,
+        }
+    }
+
+    /// Add listened time to an open play row.
+    pub fn add_play_time(&self, id: i64, secs: f64) {
+        if id == 0 || secs <= 0.0 {
+            return;
+        }
+        let conn = self.0.lock().unwrap();
+        let _ = conn.execute(
+            "UPDATE plays SET secs_played = secs_played + ?2 WHERE id = ?1",
+            params![id, secs],
+        );
+    }
+
+    pub fn log_transition(&self, from: &str, to: &str) {
+        let conn = self.0.lock().unwrap();
+        let _ = conn.execute(
+            "INSERT INTO transitions (from_path, to_path, at)
+             VALUES (?1, ?2, strftime('%s','now'))",
+            params![from, to],
+        );
+    }
+
+    /// Per-track listening stats for the whole library, keyed by path.
+    /// `(play_count, secs_played_total, last_played, loved, banned)`.
+    pub fn all_stats(&self) -> Vec<(String, i64, f64, i64, bool, bool)> {
+        let conn = self.0.lock().unwrap();
+        let mut out = Vec::new();
+        // Plays and taste are independent facts about a path, so this is a
+        // full outer join expressed as two passes: loved-but-never-played
+        // tracks must still appear.
+        if let Ok(mut stmt) = conn.prepare(
+            "SELECT p.path,
+                    COUNT(*),
+                    COALESCE(SUM(p.secs_played), 0),
+                    MAX(p.started_at)
+             FROM plays p GROUP BY p.path",
+        ) {
+            if let Ok(rows) = stmt.query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, f64>(2)?,
+                    r.get::<_, i64>(3)?,
+                ))
+            }) {
+                out.extend(rows.flatten().map(|(p, c, s, l)| (p, c, s, l, false, false)));
+            }
+        }
+        let mut index: std::collections::HashMap<String, usize> = out
+            .iter()
+            .enumerate()
+            .map(|(i, r)| (r.0.clone(), i))
+            .collect();
+        if let Ok(mut stmt) =
+            conn.prepare("SELECT path, loved, banned FROM taste WHERE loved = 1 OR banned = 1")
+        {
+            if let Ok(rows) = stmt.query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)? != 0,
+                    r.get::<_, i64>(2)? != 0,
+                ))
+            }) {
+                for (path, loved, banned) in rows.flatten() {
+                    match index.get(&path) {
+                        Some(&i) => {
+                            out[i].4 = loved;
+                            out[i].5 = banned;
+                        }
+                        None => {
+                            index.insert(path.clone(), out.len());
+                            out.push((path, 0, 0.0, 0, loved, banned));
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    pub fn set_taste(&self, path: &str, loved: bool, banned: bool) {
+        let conn = self.0.lock().unwrap();
+        let _ = conn.execute(
+            "INSERT INTO taste (path, loved, banned, updated_at)
+             VALUES (?1, ?2, ?3, strftime('%s','now'))
+             ON CONFLICT(path) DO UPDATE SET
+                loved = excluded.loved,
+                banned = excluded.banned,
+                updated_at = excluded.updated_at",
+            params![path, loved as i64, banned as i64],
+        );
+    }
+
+    // -- Last.fm -----------------------------------------------------------
+
+    /// Cached similar-artist JSON, if it was fetched within `max_age_secs`.
+    pub fn get_similar_artists(&self, artist: &str, max_age_secs: i64) -> Option<String> {
+        let conn = self.0.lock().unwrap();
+        conn.query_row(
+            "SELECT json FROM similar_artists
+             WHERE artist = ?1 AND strftime('%s','now') - fetched_at < ?2",
+            params![artist.to_lowercase(), max_age_secs],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()
+        .ok()
+        .flatten()
+    }
+
+    pub fn put_similar_artists(&self, artist: &str, json: &str) {
+        let conn = self.0.lock().unwrap();
+        let _ = conn.execute(
+            "INSERT OR REPLACE INTO similar_artists (artist, json, fetched_at)
+             VALUES (?1, ?2, strftime('%s','now'))",
+            params![artist.to_lowercase(), json],
+        );
+    }
+
+    /// Plays that qualify for scrobbling and haven't been sent yet:
+    /// Last.fm's rule is half the track or 4 minutes, whichever comes first,
+    /// and tracks must be longer than 30 s.
+    pub fn pending_scrobbles(&self, limit: usize) -> Vec<(i64, String, i64)> {
+        let conn = self.0.lock().unwrap();
+        let mut out = Vec::new();
+        if let Ok(mut stmt) = conn.prepare(
+            "SELECT id, path, started_at FROM plays
+             WHERE scrobbled = 0 AND track_secs > 30
+               AND (secs_played >= track_secs / 2.0 OR secs_played >= 240)
+             ORDER BY started_at LIMIT ?1",
+        ) {
+            if let Ok(rows) = stmt.query_map(params![limit as i64], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?))
+            }) {
+                out.extend(rows.flatten());
+            }
+        }
+        out
+    }
+
+    pub fn mark_scrobbled(&self, id: i64) {
+        let conn = self.0.lock().unwrap();
+        let _ = conn.execute("UPDATE plays SET scrobbled = 1 WHERE id = ?1", params![id]);
     }
 }

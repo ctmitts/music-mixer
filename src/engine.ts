@@ -273,6 +273,37 @@ export interface PlayedTrack {
   energy: number;
 }
 
+// --- taste -----------------------------------------------------------------
+
+export interface TrackStats {
+  path: string;
+  playCount: number;
+  secsPlayed: number;
+  /** Unix seconds of the most recent play, 0 if never. */
+  lastPlayed: number;
+  loved: boolean;
+  banned: boolean;
+}
+
+export const getTrackStats = () => invoke<TrackStats[]>("get_track_stats");
+export const setTaste = (path: string, loved: boolean, banned: boolean) =>
+  invoke("set_taste", { path, loved, banned });
+
+export interface LastfmStatus {
+  hasKey: boolean;
+  connected: boolean;
+  user: string;
+}
+
+export const lastfmStatus = () => invoke<LastfmStatus>("lastfm_status");
+export const setLastfmKey = (key: string, secret: string) =>
+  invoke("set_lastfm_key", { key, secret });
+/** Returns the approval URL the user must open. */
+export const lastfmBeginAuth = () => invoke<string>("lastfm_begin_auth");
+/** Returns the connected username. Call after the user approves. */
+export const lastfmFinishAuth = () => invoke<string>("lastfm_finish_auth");
+export const lastfmDisconnect = () => invoke("lastfm_disconnect");
+
 export const getSessionHistory = () =>
   invoke<PlayedTrack[]>("get_session_history");
 export const clearSessionHistory = () => invoke("clear_session_history");

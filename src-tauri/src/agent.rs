@@ -142,6 +142,7 @@ pub async fn select_by_vibe(
     albums: &[String],
     notes: Option<&str>,
     history: &str,
+    taste: &str,
 ) -> Result<VibeSelection> {
     let mut prompt = String::new();
     // The DJ's own notes outrank the model's general knowledge: they describe
@@ -155,6 +156,9 @@ pub async fn select_by_vibe(
             prompt.push_str(n.trim());
             prompt.push_str("\n\n");
         }
+    }
+    if !taste.is_empty() {
+        prompt.push_str(taste);
     }
     if !history.is_empty() {
         prompt.push_str(history);
@@ -225,6 +229,35 @@ slightly lifts the current energy unless the DJ asked otherwise."
 
 /// Render the set so far, oldest first. Gives the model the *arc* — a request
 /// like "keep the same feel" is meaningless without it.
+/// Describe what the DJ actually reaches for, from real play counts and
+/// explicit loves. This is evidence rather than self-report — it's the part
+/// of "their taste" that no description in a text box would capture.
+pub fn format_taste(loved: &[String], most_played: &[(String, i64)]) -> String {
+    if loved.is_empty() && most_played.is_empty() {
+        return String::new();
+    }
+    let mut s = String::from("WHAT THIS DJ ACTUALLY PLAYS (from their own history):\n");
+    if !loved.is_empty() {
+        s.push_str("Marked as loved: ");
+        s.push_str(&loved.join(", "));
+        s.push('\n');
+    }
+    if !most_played.is_empty() {
+        s.push_str("Most-played artists: ");
+        let parts: Vec<String> = most_played
+            .iter()
+            .map(|(a, n)| format!("{a} ({n})"))
+            .collect();
+        s.push_str(&parts.join(", "));
+        s.push('\n');
+    }
+    s.push_str(
+        "Lean toward this when the request is open-ended, but never at the \
+         cost of an explicit instruction.\n\n",
+    );
+    s
+}
+
 pub fn format_history(history: &[(String, String, String)]) -> String {
     if history.is_empty() {
         return String::new();

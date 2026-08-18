@@ -12,6 +12,7 @@ import {
   scanLibrary,
   startLibraryAnalysis,
   TrackMeta,
+  TrackStats,
 } from "../engine";
 import type { DeckData } from "../App";
 
@@ -28,7 +29,8 @@ type SortKey =
   | "durationSecs"
   | "format"
   | "bpm"
-  | "camelot";
+  | "camelot"
+  | "playCount";
 
 const COLUMNS: { key: SortKey; label: string; className?: string }[] = [
   { key: "title", label: "Title" },
@@ -37,6 +39,7 @@ const COLUMNS: { key: SortKey; label: string; className?: string }[] = [
   { key: "genre", label: "Genre", className: "col-genre" },
   { key: "bpm", label: "BPM", className: "col-bpm" },
   { key: "camelot", label: "Key", className: "col-key" },
+  { key: "playCount", label: "Plays", className: "col-plays" },
   { key: "durationSecs", label: "Time", className: "col-time" },
   { key: "format", label: "Format", className: "col-fmt" },
 ];
@@ -52,6 +55,8 @@ interface Props {
   decks: [DeckData, DeckData];
   /** Lift the scanned track list so the suggester can search it. */
   onTracksChange: (tracks: TrackMeta[]) => void;
+  statsMap: Map<string, TrackStats>;
+  onTaste: (path: string, loved: boolean, banned: boolean) => void;
 }
 
 export default function Library({
@@ -61,6 +66,8 @@ export default function Library({
   setAnalysisMap,
   decks,
   onTracksChange,
+  statsMap,
+  onTaste,
 }: Props) {
   const [folders, setFolders] = useState<string[]>([]);
   const [tracks, setTracks] = useState<TrackMeta[]>([]);
@@ -72,6 +79,7 @@ export default function Library({
   const [sortKey, setSortKey] = useState<SortKey | null>(null);
   const [sortDir, setSortDir] = useState<1 | -1>(1);
   const [compatOnly, setCompatOnly] = useState(false);
+  const [lovedOnly, setLovedOnly] = useState(false);
   const [genreFilter, setGenreFilter] = useState("");
   const [dupeCount, setDupeCount] = useState(0);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(
@@ -297,12 +305,18 @@ export default function Library({
         return keyOk && bpmOk;
       });
     }
+    if (lovedOnly) {
+      base = base.filter((t) => statsMap.get(t.path)?.loved);
+    }
     if (!sortKey) return base;
     const sorted = [...base];
     const valOf = (t: TrackMeta): string | number | null => {
       if (sortKey === "bpm") return analysisMap.get(t.path)?.bpm ?? null;
       if (sortKey === "camelot") return analysisMap.get(t.path)?.camelot ?? null;
       if (sortKey === "durationSecs") return t.durationSecs;
+      // Never-played sorts as 0 rather than missing, so "most played first"
+      // is one click rather than click-then-reverse.
+      if (sortKey === "playCount") return statsMap.get(t.path)?.playCount ?? 0;
       return t[sortKey];
     };
     sorted.sort((a, b) => {
@@ -327,6 +341,8 @@ export default function Library({
     sortKey,
     sortDir,
     compatOnly,
+    lovedOnly,
+    statsMap,
     refDeck,
     analysisMap,
   ]);
@@ -386,6 +402,16 @@ export default function Library({
           title="Show only tracks harmonically and tempo-compatible with the current deck"
         >
           ♪ Compatible
+        </button>
+        <button
+          className={`btn ${lovedOnly ? "active btn-loved" : ""}`}
+          onClick={() => {
+            setLovedOnly((v) => !v);
+            resetScroll();
+          }}
+          title="Show only tracks you've marked as loved"
+        >
+          ♥ Loved
         </button>
         <select
           className="genre-select"
@@ -478,6 +504,7 @@ export default function Library({
             )}
             {visible.map((t) => {
               const a = analysisMap.get(t.path);
+              const st = statsMap.get(t.path);
               return (
                 <tr key={t.path} onDoubleClick={() => onLoad(0, t)}>
                   <td className="col-load">
@@ -528,6 +555,21 @@ export default function Library({
                         {a.camelot}
                       </span>
                     )}
+                  </td>
+                  <td className="col-plays">
+                    <span
+                      className={`heart ${st?.loved ? "loved" : ""}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onTaste(t.path, !st?.loved, false);
+                      }}
+                      title={st?.loved ? "Loved — click to unset" : "Mark as loved"}
+                    >
+                      {st?.loved ? "♥" : "♡"}
+                    </span>
+                    {st?.playCount ? (
+                      <span className="plays-n">{st.playCount}</span>
+                    ) : null}
                   </td>
                   <td className="col-time">
                     {t.durationSecs > 0 ? formatTime(t.durationSecs) : "—"}

@@ -10,6 +10,7 @@ import {
   deckPosition,
   getArtwork,
   getEngineSnapshot,
+  getTrackStats,
   LoadResult,
   loadTrack,
   nextGridBoundary,
@@ -26,9 +27,11 @@ import {
   setKeyLock,
   setKeyShift,
   setRate,
+  setTaste,
   setVocal,
   subscribeEngine,
   TrackMeta,
+  TrackStats,
 } from "./engine";
 
 const ACCENTS = ["#4fc3f7", "#ff8a65"];
@@ -92,11 +95,49 @@ export default function App() {
   // 4 = bar, 32 = phrase). Default to bar — the setting that makes a
   // just-pressed play land musically without being as strict as phrase.
   const [quant, setQuant] = useState<number>(() => {
-    const saved = Number(localStorage.getItem("quantize"));
-    return [0, 1, 4, 32].includes(saved) ? saved : 4;
+    // Guard against the unset case explicitly: Number(null) is 0, which is
+    // itself a valid choice (OFF), so a bare Number() would silently defeat
+    // this default on every fresh install.
+    const saved = localStorage.getItem("quantize");
+    const n = saved === null ? NaN : Number(saved);
+    return [0, 1, 4, 32].includes(n) ? n : 4;
   });
+  // Listening history, keyed by path. Refreshed after plays so counts and
+  // hearts stay live without a restart.
+  const [statsMap, setStatsMap] = useState<Map<string, TrackStats>>(new Map());
   const decksRef = useRef(decks);
   decksRef.current = decks;
+
+  const refreshStats = () => {
+    getTrackStats()
+      .then((rows) => setStatsMap(new Map(rows.map((r) => [r.path, r]))))
+      .catch(() => {});
+  };
+
+  useEffect(() => {
+    refreshStats();
+    // Play rows are opened on play and their listened time flushes every few
+    // seconds, so a slow poll is enough to keep the UI honest.
+    const id = setInterval(refreshStats, 20000);
+    return () => clearInterval(id);
+  }, []);
+
+  const handleTaste = (path: string, loved: boolean, banned: boolean) => {
+    setStatsMap((prev) => {
+      const next = new Map(prev);
+      const cur = next.get(path);
+      next.set(path, {
+        path,
+        playCount: cur?.playCount ?? 0,
+        secsPlayed: cur?.secsPlayed ?? 0,
+        lastPlayed: cur?.lastPlayed ?? 0,
+        loved,
+        banned,
+      });
+      return next;
+    });
+    setTaste(path, loved, banned);
+  };
 
   const handleQuant = (q: number) => {
     setQuant(q);
@@ -269,6 +310,12 @@ export default function App() {
     playQuantized(deck, 1 - deck, target * snap.sampleRate);
   };
 
+  /** Play counts move when a track starts, so refresh shortly after. */
+  useEffect(() => {
+    const id = setTimeout(refreshStats, 1500);
+    return () => clearTimeout(id);
+  }, [decks[0].meta?.path, decks[1].meta?.path]);
+
   const handleRate = (deck: number, rate: number) => {
     patchDeck(deck, { rate });
     setRate(deck, rate);
@@ -359,6 +406,10 @@ export default function App() {
             accent={ACCENTS[i]}
             data={decks[i]}
             otherAnalysis={decks[1 - i].analysis}
+            stats={decks[i].meta ? statsMap.get(decks[i].meta!.path) : undefined}
+            onTaste={(loved, banned) =>
+              decks[i].meta && handleTaste(decks[i].meta!.path, loved, banned)
+            }
             onSetCue={(slot, secs) => handleSetCue(i, slot, secs)}
             onSetCueLabel={(slot, label) => handleSetCueLabel(i, slot, label)}
             onPlay={() => handlePlay(i)}
@@ -396,6 +447,8 @@ export default function App() {
         setAnalysisMap={setAnalysisMap}
         decks={decks}
         onTracksChange={setLibraryTracks}
+        statsMap={statsMap}
+        onTaste={handleTaste}
       />
     </div>
   );

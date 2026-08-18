@@ -24,7 +24,11 @@ fn main() {
         .into_iter()
         .filter_map(|meta| {
             let analysis = database.get_analysis(&meta.path)?;
-            Some(recommend::Candidate { meta, analysis })
+            Some(recommend::Candidate {
+                meta,
+                analysis,
+                taste: Default::default(),
+            })
         })
         .collect();
     println!("with cached analysis: {}\n", candidates.len());

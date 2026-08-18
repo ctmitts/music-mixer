@@ -1,13 +1,20 @@
 import { useEffect, useState } from "react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   clearSessionHistory,
   formatTime,
   getSessionHistory,
   hasApiKey,
+  lastfmBeginAuth,
+  lastfmDisconnect,
+  lastfmFinishAuth,
+  LastfmStatus,
+  lastfmStatus,
   PlayedTrack,
   recommendTracks,
   ScoredTrack,
   setApiKey,
+  setLastfmKey,
   subscribeEngine,
   TrackMeta,
 } from "../engine";
@@ -43,12 +50,18 @@ export default function Suggest({
   const [showKeyField, setShowKeyField] = useState(false);
   const [keyDraft, setKeyDraft] = useState("");
   const [history, setHistory] = useState<PlayedTrack[]>([]);
+  const [fm, setFm] = useState<LastfmStatus | null>(null);
+  const [showFmPanel, setShowFmPanel] = useState(false);
+  const [fmKey, setFmKey] = useState("");
+  const [fmSecret, setFmSecret] = useState("");
+  const [fmNote, setFmNote] = useState<string | null>(null);
   // Collapsing hands the vertical space back to the library browser, so you
   // can search and scroll the full list without losing the suggestions.
   const [collapsed, setCollapsed] = useState(false);
 
   useEffect(() => {
     hasApiKey().then(setKeyPresent).catch(() => {});
+    lastfmStatus().then(setFm).catch(() => {});
   }, []);
 
   // History is recorded Rust-side when a deck starts playing, so poll it on
@@ -187,7 +200,101 @@ export default function Suggest({
         >
           {keyPresent ? "🔑" : "🔑 Set key"}
         </button>
+        <button
+          className={`btn btn-keycfg ${fm?.connected ? "active" : ""}`}
+          onClick={() => setShowFmPanel((v) => !v)}
+          title={
+            fm?.connected
+              ? `Last.fm connected as ${fm.user} — scrobbling and similar-artist suggestions on`
+              : "Connect Last.fm for scrobbling and similar-artist suggestions"
+          }
+        >
+          {fm?.connected ? "fm ✓" : "fm"}
+        </button>
       </div>
+
+      {showFmPanel && (
+        <div className="suggest-keyrow suggest-fmrow">
+          {fm?.connected ? (
+            <>
+              <span className="fm-status">
+                Connected as <strong>{fm.user}</strong>. Plays scrobble once
+                you've heard half a track; similar artists feed suggestions.
+              </span>
+              <button
+                className="btn"
+                onClick={async () => {
+                  await lastfmDisconnect();
+                  setFm(await lastfmStatus());
+                }}
+              >
+                Disconnect
+              </button>
+            </>
+          ) : (
+            <>
+              <input
+                className="suggest-input"
+                placeholder="Last.fm API key"
+                value={fmKey}
+                onChange={(e) => setFmKey(e.target.value)}
+              />
+              <input
+                className="suggest-input"
+                type="password"
+                placeholder="Shared secret"
+                value={fmSecret}
+                onChange={(e) => setFmSecret(e.target.value)}
+              />
+              <button
+                className="btn"
+                disabled={!fmKey.trim() || !fmSecret.trim()}
+                onClick={async () => {
+                  await setLastfmKey(fmKey, fmSecret);
+                  setFmKey("");
+                  setFmSecret("");
+                  setFm(await lastfmStatus());
+                  try {
+                    // Opens the browser for approval; the user comes back and
+                    // presses Connect to trade the token for a session.
+                    const url = await lastfmBeginAuth();
+                    await openUrl(url);
+                    setFmNote("Approve in the browser, then press Connect.");
+                  } catch (e) {
+                    setFmNote(String(e));
+                  }
+                }}
+              >
+                Authorize
+              </button>
+              <button
+                className="btn"
+                disabled={!fm?.hasKey}
+                onClick={async () => {
+                  try {
+                    const user = await lastfmFinishAuth();
+                    setFm(await lastfmStatus());
+                    setFmNote(`Connected as ${user}.`);
+                  } catch (e) {
+                    setFmNote(String(e));
+                  }
+                }}
+                title="Press after approving in the browser"
+              >
+                Connect
+              </button>
+              <span className="fm-status">
+                {fmNote ?? (
+                  <>
+                    Get a free key at last.fm/api/account/create — it enables
+                    scrobbling and similar-artist suggestions.
+                  </>
+                )}
+              </span>
+            </>
+          )}
+        </div>
+      )}
 
       {showKeyField && (
         <div className="suggest-keyrow">

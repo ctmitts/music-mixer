@@ -10,6 +10,7 @@ import {
   setLoop,
   shiftCamelot,
   subscribeEngine,
+  TrackStats,
 } from "../engine";
 import type { DeckData } from "../App";
 import Fader from "./Fader";
@@ -20,6 +21,8 @@ interface Props {
   accent: string;
   data: DeckData;
   otherAnalysis: Analysis | null;
+  stats: TrackStats | undefined;
+  onTaste: (loved: boolean, banned: boolean) => void;
   onSetCue: (slot: number, seconds: number | null) => void;
   onSetCueLabel: (slot: number, label: string | null) => void;
   onPlay: () => void;
@@ -40,6 +43,8 @@ export default function Deck({
   accent,
   data,
   otherAnalysis,
+  stats,
+  onTaste,
   onSetCue,
   onSetCueLabel,
   onPlay,
@@ -137,6 +142,36 @@ export default function Deck({
             {data.meta?.title ?? (data.loading ? "Loading…" : "No track loaded")}
           </div>
           <div className="deck-artist">{data.meta?.artist ?? ""}</div>
+          {loaded && (
+            <div className="deck-taste">
+              <button
+                className={`btn btn-taste ${stats?.loved ? "loved" : ""}`}
+                onClick={() => onTaste(!stats?.loved, false)}
+                title={stats?.loved ? "Loved — click to unset" : "Mark as loved"}
+              >
+                {stats?.loved ? "♥" : "♡"}
+              </button>
+              <button
+                className={`btn btn-taste ${stats?.banned ? "banned" : ""}`}
+                onClick={() => onTaste(false, !stats?.banned)}
+                title={
+                  stats?.banned
+                    ? "Banned from suggestions — click to unset"
+                    : "Never suggest this track"
+                }
+              >
+                ⊘
+              </button>
+              {(stats?.playCount ?? 0) > 0 && (
+                <span
+                  className="play-count"
+                  title={`Played ${stats!.playCount} time${stats!.playCount === 1 ? "" : "s"}`}
+                >
+                  ×{stats!.playCount}
+                </span>
+              )}
+            </div>
+          )}
           <div className="deck-format">
             {data.meta
               ? [

@@ -1249,3 +1249,79 @@ body,
 @keyframes armed-pulse {
   50% { opacity: 0.55; }
 }
+
+/* --- Taste: love / ban / play counts ------------------------------------- */
+
+.deck-taste {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 2px 0;
+}
+
+.btn-taste {
+  padding: 0 6px;
+  font-size: 13px;
+  line-height: 1.4;
+  min-width: 0;
+}
+
+.btn-taste.loved {
+  color: #ff6b8a;
+  border-color: #7a2740;
+  background: #2a141c;
+}
+
+.btn-taste.banned {
+  color: #ff8a65;
+  border-color: #7a3a27;
+  background: #2a1a14;
+}
+
+.play-count {
+  font-size: 11px;
+  color: #7c8894;
+  margin-left: 2px;
+}
+
+.col-plays {
+  width: 62px;
+  white-space: nowrap;
+}
+
+.heart {
+  cursor: pointer;
+  color: #4a5560;
+  font-size: 13px;
+}
+
+.heart:hover {
+  color: #ff6b8a;
+}
+
+.heart.loved {
+  color: #ff6b8a;
+}
+
+.plays-n {
+  font-size: 11px;
+  color: #7c8894;
+  margin-left: 4px;
+}
+
+.btn-loved.active {
+  background: #2a141c;
+  border-color: #7a2740;
+  color: #ff6b8a;
+}
+
+.suggest-fmrow {
+  flex-wrap: wrap;
+}
+
+.fm-status {
+  font-size: 11px;
+  color: #7c8894;
+  flex: 1;
+  min-width: 180px;
+}

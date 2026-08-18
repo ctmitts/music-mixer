@@ -15,6 +15,18 @@ use crate::library::TrackMeta;
 pub struct Candidate {
     pub meta: TrackMeta,
     pub analysis: Analysis,
+    pub taste: Taste,
+}
+
+/// What the DJ's own listening says about a track. Defaults to "no opinion",
+/// which is what every track looks like before any history exists.
+#[derive(Clone, Copy, Default)]
+pub struct Taste {
+    pub play_count: i64,
+    pub loved: bool,
+    pub banned: bool,
+    /// True when a similar-artist source (Last.fm) vouches for this artist.
+    pub similar_artist: bool,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -377,11 +389,32 @@ fn score_candidate(c: &Candidate, reference: Option<&Analysis>, query: Option<&Q
     if weight <= 0.0 {
         return 0.0;
     }
-    score / weight
+    let base = score / weight;
+
+    // Taste is a *modifier*, not a scoring axis. Mixability has to stay the
+    // dominant term — a loved track in the wrong key is still the wrong
+    // record — so these are bounded multipliers rather than added weight.
+    let mut mult = 1.0;
+    if c.taste.loved {
+        mult *= 1.25;
+    }
+    if c.taste.similar_artist {
+        mult *= 1.12;
+    }
+    // Familiarity, saturating: the difference between never played and played
+    // twice is meaningful; between 20 and 40 plays it isn't.
+    mult *= 1.0 + 0.10 * (c.taste.play_count as f64 / (c.taste.play_count as f64 + 4.0));
+    (base * mult).min(1.0)
 }
 
 fn describe(c: &Candidate, reference: Option<&Analysis>) -> String {
     let mut parts: Vec<String> = Vec::new();
+    if c.taste.loved {
+        parts.push("loved".into());
+    }
+    if c.taste.similar_artist {
+        parts.push("similar artist".into());
+    }
     if let Some(r) = reference {
         let k = key_score(&c.analysis.camelot, &r.camelot);
         if k >= 0.99 {
@@ -479,9 +512,11 @@ pub fn rank(
 ) -> (Vec<ScoredTrack>, RankInfo) {
     let mut info = RankInfo::default();
 
+    // Banned tracks are removed outright — a ban is an instruction, not a
+    // preference to be outweighed by a good key match.
     let pool: Vec<&Candidate> = candidates
         .iter()
-        .filter(|c| !exclude.iter().any(|e| e == &c.meta.path))
+        .filter(|c| !c.taste.banned && !exclude.iter().any(|e| e == &c.meta.path))
         .collect();
 
     // A named genre is a hard constraint, not a preference. Without this, a

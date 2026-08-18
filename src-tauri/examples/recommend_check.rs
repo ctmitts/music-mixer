@@ -29,6 +29,7 @@ fn main() {
                 candidates.push(recommend::Candidate {
                     meta: library::track_meta(p),
                     analysis: a,
+                    taste: Default::default(),
                 });
             }
             Err(e) => eprintln!("decode failed {p}: {e}"),
@@ -37,7 +38,8 @@ fn main() {
 
     let reference = candidates[0].analysis.clone();
     println!("\n--- ranked against \"{}\" ---", candidates[0].meta.title);
-    for t in recommend::rank(&candidates, Some(&reference), None, &[paths[0].clone()], 8) {
+    let (picks, _) = recommend::rank(&candidates, Some(&reference), None, &[paths[0].clone()], 8);
+    for t in &picks {
         println!("  {:.3}  {:<34}  {}", t.score, t.title.chars().take(34).collect::<String>(), t.reason);
     }
 
@@ -49,7 +51,8 @@ fn main() {
         println!("\n--- query: \"{q}\" ---");
         println!("  parsed: bpm={:?} energy={:?} bright={:?} keywords={:?}",
                  parsed.bpm_target, parsed.energy_target, parsed.brightness_target, parsed.keywords);
-        for t in recommend::rank(&candidates, None, Some(&parsed), &[], 3) {
+        let (picks, _) = recommend::rank(&candidates, None, Some(&parsed), &[], 3);
+        for t in &picks {
             println!("  {:.3}  {}", t.score, t.title.chars().take(46).collect::<String>());
         }
     }
