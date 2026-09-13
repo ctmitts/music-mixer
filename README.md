@@ -1,8 +1,13 @@
 # Mix Table
 
-A live two-deck DJ mix table for a personal music collection, built fidelity-first:
-a native Rust audio engine (bit-accurate decode → f32 mix graph → direct device
-output) with a React UI. This is Phase 1 (MVP) of the build plan.
+An AI-powered DJ mix table, in progress. Where it's headed: a recommender that
+takes natural language to find compatible next tracks, and ML section tags on
+every song — where the trumpet starts and ends, where the vocal sits — so you
+can play track A and mix in just the trumpet section of track B.
+
+What exists today is the foundation, built fidelity-first: a live two-deck mix
+table with a native Rust audio engine (bit-accurate decode → f32 mix graph →
+direct device output) and a React UI. This is Phase 1 (MVP) of the build plan.
 
 ## What it does
 
